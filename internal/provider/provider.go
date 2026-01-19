@@ -45,6 +45,7 @@ type OsacProvider struct {
 // OsacProviderModel describes the provider data model.
 type OsacProviderModel struct {
 	Endpoint     types.String `tfsdk:"endpoint"`
+	Token        types.String `tfsdk:"token"`
 	ClientID     types.String `tfsdk:"client_id"`
 	ClientSecret types.String `tfsdk:"client_secret"`
 	Issuer       types.String `tfsdk:"issuer"`
@@ -68,24 +69,39 @@ func (p *OsacProvider) Metadata(ctx context.Context, req provider.MetadataReques
 func (p *OsacProvider) Schema(ctx context.Context, req provider.SchemaRequest, resp *provider.SchemaResponse) {
 	resp.Schema = schema.Schema{
 		Description: "Terraform provider for OSAC (OpenShift Assisted Clusters) fulfillment API.",
+		MarkdownDescription: `Terraform provider for OSAC (OpenShift Assisted Clusters) fulfillment API.
+
+## Authentication
+
+The provider supports two authentication methods:
+
+1. **Token authentication**: Provide a static access token via the ` + "`token`" + ` attribute.
+2. **OAuth2 client credentials**: Provide ` + "`client_id`" + `, ` + "`client_secret`" + `, and ` + "`issuer`" + ` attributes.
+
+You must use one of these methods, not both.`,
 		Attributes: map[string]schema.Attribute{
 			"endpoint": schema.StringAttribute{
 				Description: "The gRPC endpoint address of the fulfillment API (e.g., api.example.com:443).",
 				Required:    true,
 			},
+			"token": schema.StringAttribute{
+				Description: "Access token for authentication. Use this OR the OAuth2 client credentials (client_id, client_secret, issuer), not both.",
+				Optional:    true,
+				Sensitive:   true,
+			},
 			"client_id": schema.StringAttribute{
-				Description: "OAuth2 client ID for authentication.",
-				Required:    true,
+				Description: "OAuth2 client ID for authentication. Required if not using token authentication.",
+				Optional:    true,
 				Sensitive:   true,
 			},
 			"client_secret": schema.StringAttribute{
-				Description: "OAuth2 client secret for authentication.",
-				Required:    true,
+				Description: "OAuth2 client secret for authentication. Required if not using token authentication.",
+				Optional:    true,
 				Sensitive:   true,
 			},
 			"issuer": schema.StringAttribute{
-				Description: "OAuth2 issuer URL for token endpoint discovery.",
-				Required:    true,
+				Description: "OAuth2 issuer URL for token endpoint discovery. Required if not using token authentication.",
+				Optional:    true,
 			},
 			"insecure": schema.BoolAttribute{
 				Description: "Skip TLS certificate verification. Not recommended for production.",
@@ -112,32 +128,76 @@ func (p *OsacProvider) Configure(ctx context.Context, req provider.ConfigureRequ
 		Level: slog.LevelWarn,
 	}))
 
-	// Create OAuth token source using client credentials flow
-	tokenStore, err := auth.NewMemoryTokenStore().
-		SetLogger(logger).
-		Build()
-	if err != nil {
+	// Determine authentication method
+	hasToken := !config.Token.IsNull() && config.Token.ValueString() != ""
+	hasOAuth := !config.ClientID.IsNull() && config.ClientID.ValueString() != "" &&
+		!config.ClientSecret.IsNull() && config.ClientSecret.ValueString() != "" &&
+		!config.Issuer.IsNull() && config.Issuer.ValueString() != ""
+
+	// Validate authentication configuration
+	if hasToken && hasOAuth {
 		resp.Diagnostics.AddError(
-			"Failed to create token store",
-			err.Error(),
+			"Invalid authentication configuration",
+			"Provide either 'token' OR OAuth2 credentials (client_id, client_secret, issuer), not both.",
 		)
 		return
 	}
 
-	tokenSource, err := oauth.NewTokenSource().
-		SetLogger(logger).
-		SetFlow(oauth.CredentialsFlow).
-		SetIssuer(config.Issuer.ValueString()).
-		SetClientId(config.ClientID.ValueString()).
-		SetClientSecret(config.ClientSecret.ValueString()).
-		SetStore(tokenStore).
-		Build()
-	if err != nil {
+	if !hasToken && !hasOAuth {
 		resp.Diagnostics.AddError(
-			"Failed to create OAuth token source",
-			err.Error(),
+			"Missing authentication configuration",
+			"Provide either 'token' for token authentication OR 'client_id', 'client_secret', and 'issuer' for OAuth2 authentication.",
 		)
 		return
+	}
+
+	// Create token source based on authentication method
+	var tokenSource auth.TokenSource
+	var err error
+
+	if hasToken {
+		// Use static token authentication
+		tokenSource, err = auth.NewStaticTokenSource().
+			SetLogger(logger).
+			SetToken(&auth.Token{
+				Access: config.Token.ValueString(),
+			}).
+			Build()
+		if err != nil {
+			resp.Diagnostics.AddError(
+				"Failed to create token source",
+				err.Error(),
+			)
+			return
+		}
+	} else {
+		// Use OAuth2 client credentials flow
+		tokenStore, err := auth.NewMemoryTokenStore().
+			SetLogger(logger).
+			Build()
+		if err != nil {
+			resp.Diagnostics.AddError(
+				"Failed to create token store",
+				err.Error(),
+			)
+			return
+		}
+
+		tokenSource, err = oauth.NewTokenSource().
+			SetLogger(logger).
+			SetFlow(oauth.CredentialsFlow).
+			SetIssuer(config.Issuer.ValueString()).
+			SetClientId(config.ClientID.ValueString()).
+			SetClientSecret(config.ClientSecret.ValueString()).
+			SetStore(tokenStore).
+			Build()
+		if err != nil {
+			resp.Diagnostics.AddError(
+				"Failed to create OAuth token source",
+				err.Error(),
+			)
+			return
+		}
 	}
 
 	// Build gRPC client options

@@ -3,21 +3,29 @@
 terraform {
   required_providers {
     osac = {
-      source = "registry.terraform.io/innabox/osac"
+      source = "innabox/osac"
     }
   }
 }
 
 # Configure the OSAC provider
+# Option 1: Token authentication
 provider "osac" {
-  endpoint      = var.osac_endpoint
-  client_id     = var.osac_client_id
-  client_secret = var.osac_client_secret
-  issuer        = var.osac_issuer
+  endpoint = var.osac_endpoint
+  token    = var.osac_token
+
   # Optional: for development environments
   # insecure  = true
   # plaintext = true
 }
+
+# Option 2: OAuth2 client credentials (uncomment to use instead of token)
+# provider "osac" {
+#   endpoint      = var.osac_endpoint
+#   client_id     = var.osac_client_id
+#   client_secret = var.osac_client_secret
+#   issuer        = var.osac_issuer
+# }
 
 # Variables
 variable "osac_endpoint" {
@@ -25,21 +33,33 @@ variable "osac_endpoint" {
   type        = string
 }
 
+# Token authentication
+variable "osac_token" {
+  description = "Access token for authentication"
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
+# OAuth2 authentication (alternative to token)
 variable "osac_client_id" {
   description = "OAuth2 client ID"
   type        = string
   sensitive   = true
+  default     = ""
 }
 
 variable "osac_client_secret" {
   description = "OAuth2 client secret"
   type        = string
   sensitive   = true
+  default     = ""
 }
 
 variable "osac_issuer" {
   description = "OAuth2 issuer URL"
   type        = string
+  default     = ""
 }
 
 # Data source: Look up a cluster template

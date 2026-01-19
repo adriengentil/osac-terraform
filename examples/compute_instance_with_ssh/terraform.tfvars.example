@@ -1,0 +1,13 @@
+# Copy this file to terraform.tfvars and fill in your values
+
+osac_endpoint      = "api.example.com:443"
+osac_client_id     = "your-client-id"
+osac_client_secret = "your-client-secret"
+osac_issuer        = "https://auth.example.com"
+
+# VM configuration
+vm_name = "my-dev-vm"
+
+# SSH key - provide either the key directly or a path to the file
+# ssh_public_key = "ssh-rsa AAAA..."
+ssh_public_key_file = "~/.ssh/id_rsa.pub"

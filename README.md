@@ -25,11 +25,36 @@ go install .
 
 ### Provider Configuration
 
+The provider supports two authentication methods: **token authentication** or **OAuth2 client credentials**.
+
+#### Option 1: Token Authentication
+
+Use a static access token for authentication:
+
 ```hcl
 terraform {
   required_providers {
     osac = {
-      source = "registry.terraform.io/innabox/osac"
+      source = "innabox/osac"
+    }
+  }
+}
+
+provider "osac" {
+  endpoint = "api.example.com:443"
+  token    = var.osac_token
+}
+```
+
+#### Option 2: OAuth2 Client Credentials
+
+Use OAuth2 client credentials flow for authentication:
+
+```hcl
+terraform {
+  required_providers {
+    osac = {
+      source = "innabox/osac"
     }
   }
 }
@@ -39,10 +64,23 @@ provider "osac" {
   client_id     = var.osac_client_id
   client_secret = var.osac_client_secret
   issuer        = "https://auth.example.com"
+}
+```
 
-  # Optional: for development environments
-  # insecure  = true   # Skip TLS verification
-  # plaintext = true   # Use plaintext (no TLS)
+#### Development Options
+
+For development environments, you can disable TLS verification:
+
+```hcl
+provider "osac" {
+  endpoint = "api.example.com:443"
+  token    = var.osac_token
+
+  # Skip TLS certificate verification (not recommended for production)
+  insecure = true
+
+  # Use plaintext connection without TLS (not recommended for production)
+  # plaintext = true
 }
 ```
 
@@ -51,11 +89,14 @@ provider "osac" {
 | Argument | Description | Required |
 |----------|-------------|----------|
 | `endpoint` | gRPC endpoint address of the fulfillment API | Yes |
-| `client_id` | OAuth2 client ID for authentication | Yes |
-| `client_secret` | OAuth2 client secret for authentication | Yes |
-| `issuer` | OAuth2 issuer URL for token endpoint discovery | Yes |
+| `token` | Access token for authentication (use this OR OAuth2 credentials) | No* |
+| `client_id` | OAuth2 client ID for authentication | No* |
+| `client_secret` | OAuth2 client secret for authentication | No* |
+| `issuer` | OAuth2 issuer URL for token endpoint discovery | No* |
 | `insecure` | Skip TLS certificate verification (not recommended for production) | No |
 | `plaintext` | Use plaintext connection without TLS (not recommended for production) | No |
+
+\* You must provide either `token` OR all three OAuth2 credentials (`client_id`, `client_secret`, `issuer`)
 
 ## Resources
 
