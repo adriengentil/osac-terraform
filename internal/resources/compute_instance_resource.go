@@ -24,6 +24,8 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/types"
+	"google.golang.org/protobuf/types/known/anypb"
+	"google.golang.org/protobuf/types/known/wrapperspb"
 
 	fulfillmentv1 "github.com/innabox/fulfillment-common/api/fulfillment/v1"
 	sharedv1 "github.com/innabox/fulfillment-common/api/shared/v1"
@@ -126,9 +128,17 @@ func (r *ComputeInstanceResource) Create(ctx context.Context, req resource.Creat
 		return
 	}
 
+	// Convert template parameters
+	templateParams, err := convertTemplateParameters(ctx, data.TemplateParameters)
+	if err != nil {
+		resp.Diagnostics.AddError("Failed to convert template parameters", err.Error())
+		return
+	}
+
 	// Build the compute instance spec
 	spec := &fulfillmentv1.ComputeInstanceSpec{
-		Template: data.Template.ValueString(),
+		Template:           data.Template.ValueString(),
+		TemplateParameters: templateParams,
 	}
 
 	// Build the compute instance
@@ -210,12 +220,22 @@ func (r *ComputeInstanceResource) Update(ctx context.Context, req resource.Updat
 		return
 	}
 
+	// Convert template parameters
+	templateParams, err := convertTemplateParameters(ctx, data.TemplateParameters)
+	if err != nil {
+		resp.Diagnostics.AddError("Failed to convert template parameters", err.Error())
+		return
+	}
+
 	// Build the update request
+	spec := &fulfillmentv1.ComputeInstanceSpec{
+		Template:           data.Template.ValueString(),
+		TemplateParameters: templateParams,
+	}
+
 	instance := &fulfillmentv1.ComputeInstance{
-		Id: data.ID.ValueString(),
-		Spec: &fulfillmentv1.ComputeInstanceSpec{
-			Template: data.Template.ValueString(),
-		},
+		Id:   data.ID.ValueString(),
+		Spec: spec,
 	}
 
 	if !data.Name.IsNull() {
@@ -306,6 +326,32 @@ func (r *ComputeInstanceResource) instanceStateRefreshFunc(ctx context.Context, 
 
 		return instance, state.String(), nil
 	}
+}
+
+// convertTemplateParameters converts a Terraform map of strings to a protobuf map of Any values.
+func convertTemplateParameters(ctx context.Context, tfMap types.Map) (map[string]*anypb.Any, error) {
+	if tfMap.IsNull() || tfMap.IsUnknown() {
+		return nil, nil
+	}
+
+	// Extract the map as Go strings
+	stringMap := make(map[string]string)
+	diags := tfMap.ElementsAs(ctx, &stringMap, false)
+	if diags.HasError() {
+		return nil, fmt.Errorf("failed to extract template parameters")
+	}
+
+	// Convert each string to anypb.Any wrapping a StringValue
+	result := make(map[string]*anypb.Any)
+	for key, value := range stringMap {
+		anyValue, err := anypb.New(wrapperspb.String(value))
+		if err != nil {
+			return nil, fmt.Errorf("could not convert parameter %q: %w", key, err)
+		}
+		result[key] = anyValue
+	}
+
+	return result, nil
 }
 
 func (r *ComputeInstanceResource) updateModelFromComputeInstance(model *ComputeInstanceResourceModel, instance *fulfillmentv1.ComputeInstance) {

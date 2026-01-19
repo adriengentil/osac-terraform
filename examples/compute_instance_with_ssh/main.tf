@@ -65,6 +65,10 @@ resource "osac_compute_instance" "vm" {
 
   template_parameters = {
     ssh_public_key = local.ssh_public_key
-    cloud_init     = base64encode(local.cloud_init)
+    cloud_init_config = base64encode(local.cloud_init)
   }
+}
+
+output "vm" {
+  value = data.osac_compute_instance_template.vm
 }
