@@ -152,8 +152,31 @@ func (r *ComputeInstanceResource) Create(ctx context.Context, req resource.Creat
 		return
 	}
 
-	// Update state with response
-	r.updateModelFromComputeInstance(&data, createResp.Object)
+	instanceID := createResp.Object.Id
+
+	// Wait for instance to reach READY state
+	result, err := WaitForReady(ctx, WaitForReadyConfig{
+		PendingStates: []string{
+			fulfillmentv1.ComputeInstanceState_COMPUTE_INSTANCE_STATE_UNSPECIFIED.String(),
+			fulfillmentv1.ComputeInstanceState_COMPUTE_INSTANCE_STATE_PROGRESSING.String(),
+		},
+		TargetStates: []string{
+			fulfillmentv1.ComputeInstanceState_COMPUTE_INSTANCE_STATE_READY.String(),
+		},
+		RefreshFunc: r.instanceStateRefreshFunc(ctx, instanceID),
+		Timeout:     DefaultCreateTimeout,
+	})
+	if err != nil {
+		resp.Diagnostics.AddError(
+			"Error waiting for compute instance to be ready",
+			fmt.Sprintf("Instance %s: %s", instanceID, err.Error()),
+		)
+		return
+	}
+
+	// Update state with the final instance data
+	finalInstance := result.(*fulfillmentv1.ComputeInstance)
+	r.updateModelFromComputeInstance(&data, finalInstance)
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 }
@@ -209,7 +232,31 @@ func (r *ComputeInstanceResource) Update(ctx context.Context, req resource.Updat
 		return
 	}
 
-	r.updateModelFromComputeInstance(&data, updateResp.Object)
+	instanceID := updateResp.Object.Id
+
+	// Wait for instance to reach READY state
+	result, err := WaitForReady(ctx, WaitForReadyConfig{
+		PendingStates: []string{
+			fulfillmentv1.ComputeInstanceState_COMPUTE_INSTANCE_STATE_UNSPECIFIED.String(),
+			fulfillmentv1.ComputeInstanceState_COMPUTE_INSTANCE_STATE_PROGRESSING.String(),
+		},
+		TargetStates: []string{
+			fulfillmentv1.ComputeInstanceState_COMPUTE_INSTANCE_STATE_READY.String(),
+		},
+		RefreshFunc: r.instanceStateRefreshFunc(ctx, instanceID),
+		Timeout:     DefaultUpdateTimeout,
+	})
+	if err != nil {
+		resp.Diagnostics.AddError(
+			"Error waiting for compute instance to be ready after update",
+			fmt.Sprintf("Instance %s: %s", instanceID, err.Error()),
+		)
+		return
+	}
+
+	// Update state with the final instance data
+	finalInstance := result.(*fulfillmentv1.ComputeInstance)
+	r.updateModelFromComputeInstance(&data, finalInstance)
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 }
@@ -235,6 +282,32 @@ func (r *ComputeInstanceResource) ImportState(ctx context.Context, req resource.
 	resource.ImportStatePassthroughID(ctx, path.Root("id"), req, resp)
 }
 
+// instanceStateRefreshFunc returns a StateRefreshFunc that fetches the instance and returns its state.
+// This follows the AWS provider pattern for polling resource status.
+func (r *ComputeInstanceResource) instanceStateRefreshFunc(ctx context.Context, instanceID string) StateRefreshFunc {
+	return func() (interface{}, string, error) {
+		getResp, err := r.client.Get(ctx, &fulfillmentv1.ComputeInstancesGetRequest{Id: instanceID})
+		if err != nil {
+			return nil, "", fmt.Errorf("failed to get compute instance: %w", err)
+		}
+
+		instance := getResp.Object
+		if instance.Status == nil {
+			// Status not yet available, return unspecified state to continue polling
+			return instance, fulfillmentv1.ComputeInstanceState_COMPUTE_INSTANCE_STATE_UNSPECIFIED.String(), nil
+		}
+
+		state := instance.Status.State
+
+		// If the instance has failed, return an error to stop polling
+		if state == fulfillmentv1.ComputeInstanceState_COMPUTE_INSTANCE_STATE_FAILED {
+			return nil, state.String(), fmt.Errorf("compute instance reached FAILED state")
+		}
+
+		return instance, state.String(), nil
+	}
+}
+
 func (r *ComputeInstanceResource) updateModelFromComputeInstance(model *ComputeInstanceResourceModel, instance *fulfillmentv1.ComputeInstance) {
 	model.ID = types.StringValue(instance.Id)
 
@@ -249,5 +322,8 @@ func (r *ComputeInstanceResource) updateModelFromComputeInstance(model *ComputeI
 	if instance.Status != nil {
 		model.State = types.StringValue(instance.Status.State.String())
 		model.IPAddress = types.StringValue(instance.Status.IpAddress)
+	} else {
+		model.State = types.StringNull()
+		model.IPAddress = types.StringNull()
 	}
 }

@@ -176,8 +176,31 @@ func (r *HostPoolResource) Create(ctx context.Context, req resource.CreateReques
 		return
 	}
 
-	// Update state with response
-	r.updateModelFromHostPool(ctx, &data, createResp.Object, &resp.Diagnostics)
+	hostPoolID := createResp.Object.Id
+
+	// Wait for host pool to reach READY state
+	result, err := WaitForReady(ctx, WaitForReadyConfig{
+		PendingStates: []string{
+			fulfillmentv1.HostPoolState_HOST_POOL_STATE_UNSPECIFIED.String(),
+			fulfillmentv1.HostPoolState_HOST_POOL_STATE_PROGRESSING.String(),
+		},
+		TargetStates: []string{
+			fulfillmentv1.HostPoolState_HOST_POOL_STATE_READY.String(),
+		},
+		RefreshFunc: r.hostPoolStateRefreshFunc(ctx, hostPoolID),
+		Timeout:     DefaultCreateTimeout,
+	})
+	if err != nil {
+		resp.Diagnostics.AddError(
+			"Error waiting for host pool to be ready",
+			fmt.Sprintf("Host pool %s: %s", hostPoolID, err.Error()),
+		)
+		return
+	}
+
+	// Update state with the final host pool data
+	finalHostPool := result.(*fulfillmentv1.HostPool)
+	r.updateModelFromHostPool(ctx, &data, finalHostPool, &resp.Diagnostics)
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 }
@@ -250,7 +273,31 @@ func (r *HostPoolResource) Update(ctx context.Context, req resource.UpdateReques
 		return
 	}
 
-	r.updateModelFromHostPool(ctx, &data, updateResp.Object, &resp.Diagnostics)
+	hostPoolID := updateResp.Object.Id
+
+	// Wait for host pool to reach READY state
+	result, err := WaitForReady(ctx, WaitForReadyConfig{
+		PendingStates: []string{
+			fulfillmentv1.HostPoolState_HOST_POOL_STATE_UNSPECIFIED.String(),
+			fulfillmentv1.HostPoolState_HOST_POOL_STATE_PROGRESSING.String(),
+		},
+		TargetStates: []string{
+			fulfillmentv1.HostPoolState_HOST_POOL_STATE_READY.String(),
+		},
+		RefreshFunc: r.hostPoolStateRefreshFunc(ctx, hostPoolID),
+		Timeout:     DefaultUpdateTimeout,
+	})
+	if err != nil {
+		resp.Diagnostics.AddError(
+			"Error waiting for host pool to be ready after update",
+			fmt.Sprintf("Host pool %s: %s", hostPoolID, err.Error()),
+		)
+		return
+	}
+
+	// Update state with the final host pool data
+	finalHostPool := result.(*fulfillmentv1.HostPool)
+	r.updateModelFromHostPool(ctx, &data, finalHostPool, &resp.Diagnostics)
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 }
@@ -274,6 +321,28 @@ func (r *HostPoolResource) Delete(ctx context.Context, req resource.DeleteReques
 
 func (r *HostPoolResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
 	resource.ImportStatePassthroughID(ctx, path.Root("id"), req, resp)
+}
+
+// hostPoolStateRefreshFunc returns a StateRefreshFunc that fetches the host pool and returns its state.
+func (r *HostPoolResource) hostPoolStateRefreshFunc(ctx context.Context, hostPoolID string) StateRefreshFunc {
+	return func() (interface{}, string, error) {
+		getResp, err := r.client.Get(ctx, &fulfillmentv1.HostPoolsGetRequest{Id: hostPoolID})
+		if err != nil {
+			return nil, "", fmt.Errorf("failed to get host pool: %w", err)
+		}
+
+		hostPool := getResp.Object
+		if hostPool.Status == nil {
+			return hostPool, fulfillmentv1.HostPoolState_HOST_POOL_STATE_UNSPECIFIED.String(), nil
+		}
+
+		state := hostPool.Status.State
+		if state == fulfillmentv1.HostPoolState_HOST_POOL_STATE_FAILED {
+			return nil, state.String(), fmt.Errorf("host pool reached FAILED state")
+		}
+
+		return hostPool, state.String(), nil
+	}
 }
 
 func (r *HostPoolResource) updateModelFromHostPool(ctx context.Context, model *HostPoolResourceModel, hostPool *fulfillmentv1.HostPool, diags *diag.Diagnostics) {
@@ -312,5 +381,8 @@ func (r *HostPoolResource) updateModelFromHostPool(ctx context.Context, model *H
 		hostsValue, d := types.ListValueFrom(ctx, types.StringType, hosts)
 		diags.Append(d...)
 		model.Hosts = hostsValue
+	} else {
+		model.State = types.StringNull()
+		model.Hosts = types.ListNull(types.StringType)
 	}
 }

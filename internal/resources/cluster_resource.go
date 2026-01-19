@@ -194,8 +194,31 @@ func (r *ClusterResource) Create(ctx context.Context, req resource.CreateRequest
 		return
 	}
 
-	// Update state with response
-	r.updateModelFromCluster(ctx, &data, createResp.Object, &resp.Diagnostics)
+	clusterID := createResp.Object.Id
+
+	// Wait for cluster to reach READY state
+	result, err := WaitForReady(ctx, WaitForReadyConfig{
+		PendingStates: []string{
+			fulfillmentv1.ClusterState_CLUSTER_STATE_UNSPECIFIED.String(),
+			fulfillmentv1.ClusterState_CLUSTER_STATE_PROGRESSING.String(),
+		},
+		TargetStates: []string{
+			fulfillmentv1.ClusterState_CLUSTER_STATE_READY.String(),
+		},
+		RefreshFunc: r.clusterStateRefreshFunc(ctx, clusterID),
+		Timeout:     DefaultCreateTimeout,
+	})
+	if err != nil {
+		resp.Diagnostics.AddError(
+			"Error waiting for cluster to be ready",
+			fmt.Sprintf("Cluster %s: %s", clusterID, err.Error()),
+		)
+		return
+	}
+
+	// Update state with the final cluster data
+	finalCluster := result.(*fulfillmentv1.Cluster)
+	r.updateModelFromCluster(ctx, &data, finalCluster, &resp.Diagnostics)
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 }
@@ -268,7 +291,31 @@ func (r *ClusterResource) Update(ctx context.Context, req resource.UpdateRequest
 		return
 	}
 
-	r.updateModelFromCluster(ctx, &data, updateResp.Object, &resp.Diagnostics)
+	clusterID := updateResp.Object.Id
+
+	// Wait for cluster to reach READY state
+	result, err := WaitForReady(ctx, WaitForReadyConfig{
+		PendingStates: []string{
+			fulfillmentv1.ClusterState_CLUSTER_STATE_UNSPECIFIED.String(),
+			fulfillmentv1.ClusterState_CLUSTER_STATE_PROGRESSING.String(),
+		},
+		TargetStates: []string{
+			fulfillmentv1.ClusterState_CLUSTER_STATE_READY.String(),
+		},
+		RefreshFunc: r.clusterStateRefreshFunc(ctx, clusterID),
+		Timeout:     DefaultUpdateTimeout,
+	})
+	if err != nil {
+		resp.Diagnostics.AddError(
+			"Error waiting for cluster to be ready after update",
+			fmt.Sprintf("Cluster %s: %s", clusterID, err.Error()),
+		)
+		return
+	}
+
+	// Update state with the final cluster data
+	finalCluster := result.(*fulfillmentv1.Cluster)
+	r.updateModelFromCluster(ctx, &data, finalCluster, &resp.Diagnostics)
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 }
@@ -292,6 +339,28 @@ func (r *ClusterResource) Delete(ctx context.Context, req resource.DeleteRequest
 
 func (r *ClusterResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
 	resource.ImportStatePassthroughID(ctx, path.Root("id"), req, resp)
+}
+
+// clusterStateRefreshFunc returns a StateRefreshFunc that fetches the cluster and returns its state.
+func (r *ClusterResource) clusterStateRefreshFunc(ctx context.Context, clusterID string) StateRefreshFunc {
+	return func() (interface{}, string, error) {
+		getResp, err := r.client.Get(ctx, &fulfillmentv1.ClustersGetRequest{Id: clusterID})
+		if err != nil {
+			return nil, "", fmt.Errorf("failed to get cluster: %w", err)
+		}
+
+		cluster := getResp.Object
+		if cluster.Status == nil {
+			return cluster, fulfillmentv1.ClusterState_CLUSTER_STATE_UNSPECIFIED.String(), nil
+		}
+
+		state := cluster.Status.State
+		if state == fulfillmentv1.ClusterState_CLUSTER_STATE_FAILED {
+			return nil, state.String(), fmt.Errorf("cluster reached FAILED state")
+		}
+
+		return cluster, state.String(), nil
+	}
 }
 
 func (r *ClusterResource) updateModelFromCluster(ctx context.Context, model *ClusterResourceModel, cluster *fulfillmentv1.Cluster, diags *diag.Diagnostics) {
@@ -328,6 +397,10 @@ func (r *ClusterResource) updateModelFromCluster(ctx context.Context, model *Clu
 		model.State = types.StringValue(cluster.Status.State.String())
 		model.ApiURL = types.StringValue(cluster.Status.ApiUrl)
 		model.ConsoleURL = types.StringValue(cluster.Status.ConsoleUrl)
+	} else {
+		model.State = types.StringNull()
+		model.ApiURL = types.StringNull()
+		model.ConsoleURL = types.StringNull()
 	}
 }
 
